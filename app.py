@@ -97,19 +97,42 @@ def create_excel():
                     apply_styles_to_cell(cell, cell_data.get('style'))
 
         # 4. Aplicar formato condicional
-        for rule_info in conditional_rules:
-            dxf = DifferentialStyle(
-                font=Font(**rule_info['style'].get('font', {})),
-                fill=PatternFill(**rule_info['style'].get('fill', {}))
-            )
-            # Nota: La estructura de la regla en OpenPyXL es un poco diferente a ExcelJS
-            rule = Rule(
-                type=rule_info['type'], 
-                dxf=dxf, 
-                stopIfTrue=False, 
-                formula=rule_info['formulae']
-            )
-            ws.conditional_formatting.add(rule_info['ref'], rule)
+       # === NUEVA SECCIÓN DE FORMATO CONDICIONAL (MÁS ROBUSTA) ===
+from openpyxl.formatting.rule import Rule, DataBarRule # Asegúrate de añadir DataBarRule en los imports
+
+# ... (dentro de tu endpoint /create-excel)
+
+for rule_info in conditional_rules:
+    style = rule_info.get('style', {})
+    dxf = DifferentialStyle(
+        font=Font(**style.get('font', {})),
+        fill=PatternFill(**style.get('fill', {}))
+    )
+
+    # Construye los parámetros de la regla dinámicamente
+    rule_params = {
+        'type': rule_info['type'],
+        'dxf': dxf
+    }
+    if 'operator' in rule_info:
+        rule_params['operator'] = rule_info['operator']
+
+    # La clave en el JSON es 'formulae', pero el parámetro de openpyxl es 'formula'
+    if 'formulae' in rule_info:
+        rule_params['formula'] = rule_info['formulae']
+
+    # Manejo especial para reglas que no usan 'dxf' como las barras de datos
+    if rule_info['type'] == 'dataBar':
+        rule = DataBarRule(
+            start_type='min', end_type='max', 
+            color=rule_info.get("color", "638EC6")
+        )
+    else:
+        rule = Rule(**rule_params)
+
+    ws.conditional_formatting.add(rule_info['ref'], rule)
+
+# === FIN DE LA NUEVA SECCIÓN ===
 
         # 5. ¡NUEVO! Crear e insertar los gráficos
         for spec in chart_specs:
@@ -148,3 +171,4 @@ def create_excel():
 if __name__ == '__main__':
     # Ejecutar en modo debug para desarrollo local
     app.run(debug=True, port=5000)
+
