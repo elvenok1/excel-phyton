@@ -5,7 +5,6 @@ from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.styles.differential import DifferentialStyle
 from openpyxl.formatting.rule import Rule, DataBarRule
 from openpyxl.chart import BarChart, LineChart, PieChart, Reference
-# --- ¡NUEVO IMPORT NECESARIO PARA LA SOLUCIÓN! ---
 from openpyxl.utils import get_column_letter
 from openpyxl.cell import MergedCell
 
@@ -67,19 +66,34 @@ def create_excel():
         for cell_range in merge_cells_list:
             ws.merge_cells(cell_range)
 
+        # === SECCIÓN DE FORMATO CONDICIONAL - CORRECCIÓN FINAL ===
         for rule_info in conditional_rules:
-            style = rule_info.get('style', {}); dxf = DifferentialStyle(font=Font(**style.get('font', {})), fill=PatternFill(**style.get('fill', {})))
+            style = rule_info.get('style', {})
+            dxf = DifferentialStyle(font=Font(**style.get('font', {})), fill=PatternFill(**style.get('fill', {})))
+            
             rule_params = {'type': rule_info['type'], 'dxf': dxf}
-            if 'operator' in rule_info: rule_params['operator'] = rule_info['operator']
-            if 'formulae' in rule_info: rule_params['formula'] = rule_info['formulae']
-            if rule_info['type'] == 'dataBar': rule = DataBarRule(start_type='min', end_type='max', color=rule_info.get("color", "638EC6"))
-            else: rule = Rule(**rule_params)
+            if 'operator' in rule_info:
+                rule_params['operator'] = rule_info['operator']
+            
+            # --- CORRECCIÓN CLAVE: Usar el parámetro 'text' o 'formula' según el tipo de regla ---
+            if rule_info['type'] == 'containsText':
+                if 'formulae' in rule_info and rule_info['formulae']:
+                    rule_params['text'] = rule_info['formulae'][0] # Las reglas de texto usan el parámetro 'text'
+            elif 'formulae' in rule_info:
+                rule_params['formula'] = rule_info['formulae'] # Las reglas numéricas usan 'formula'
+
+            if rule_info['type'] == 'dataBar':
+                rule = DataBarRule(start_type='min', end_type='max', color=rule_info.get("color", "638EC6"))
+            else:
+                rule = Rule(**rule_params)
+
             ws.conditional_formatting.add(rule_info['ref'], rule)
+        # === FIN DE LA SECCIÓN CORREGIDA ===
 
         for spec in chart_specs:
             create_chart_from_spec(ws, spec)
 
-        # === SECCIÓN DE AJUSTE DE COLUMNAS CORREGIDA Y ROBUSTA ===
+        # Lógica de ajuste de columnas robusta
         column_widths = {}
         for row in ws.iter_rows():
             for cell in row:
@@ -93,13 +107,12 @@ def create_excel():
             column_letter = get_column_letter(col_idx)
             adjusted_width = (max_length + 2) if max_length < 50 else 50
             ws.column_dimensions[column_letter].width = adjusted_width
-        # === FIN DE LA SECCIÓN CORREGIDA ===
 
         buffer = io.BytesIO()
         wb.save(buffer)
         buffer.seek(0)
 
-        return send_file(buffer, as_attachment=True, download_name='reporte_completo.xlsx', mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        return send_file(buffer, as_attachment=True, download_name='reporte_final_correcto.xlsx', mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     except Exception as e:
         print(f"Error en /create-excel: {e}")
         return jsonify({"error": f"Error interno del servidor: {str(e)}"}), 500
