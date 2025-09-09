@@ -1,9 +1,8 @@
 import io
 from flask import Flask, request, jsonify, send_file
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
-from openpyxl.formatting.rule import Rule
-from openpyxl.styles.differential import DifferentialStyle
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment, DifferentialStyle
+from openpyxl.formatting.rule import Rule, DataBarRule
 from openpyxl.chart import BarChart, LineChart, PieChart, Reference
 
 # --- Inicialización de la Aplicación Flask ---
@@ -19,7 +18,6 @@ def apply_styles_to_cell(cell, style_data):
     if 'font' in style_data:
         cell.font = Font(**style_data['font'])
     if 'fill' in style_data:
-        # OpenPyXL espera 'fill_type' en lugar de 'pattern'
         if 'pattern' in style_data['fill']:
             style_data['fill']['fill_type'] = style_data['fill'].pop('pattern')
         cell.fill = PatternFill(**style_data['fill'])
@@ -47,10 +45,8 @@ def create_chart_from_spec(worksheet, chart_spec):
     elif chart_type == 'pie':
         chart = PieChart()
     else:
-        # Tipo de gráfico no soportado, se omite
         return
 
-    # --- Configuración del Gráfico ---
     chart.title = chart_spec.get('title', 'Gráfico sin Título')
     chart.style = chart_spec.get('style', 10)
     if 'y_axis_title' in chart_spec:
@@ -58,14 +54,12 @@ def create_chart_from_spec(worksheet, chart_spec):
     if 'x_axis_title' in chart_spec:
         chart.x_axis.title = chart_spec['x_axis_title']
 
-    # --- Definición de Datos y Categorías ---
     data = Reference(worksheet, range_string=chart_spec['data_range'])
     cats = Reference(worksheet, range_string=chart_spec['category_range'])
 
     chart.add_data(data, titles_from_data=chart_spec.get('titles_from_data', True))
     chart.set_categories(cats)
     
-    # --- Añadir el gráfico a la hoja ---
     worksheet.add_chart(chart, chart_spec.get('position', 'E1'))
 
 
@@ -79,9 +73,10 @@ def create_excel():
         if not json_data or 'analysisData' not in json_data:
             return jsonify({"error": "El JSON no es válido o no contiene 'analysisData'."}), 400
 
-        analysis_data = json_data['analysisData']
+        analysis_data = json_data.get('analysisData', [])
         conditional_rules = json_data.get('conditionalFormattingRules', [])
-        chart_specs = json_data.get('charts', []) # ¡NUEVO: Obtenemos los datos para los gráficos!
+        chart_specs = json_data.get('charts', [])
+        merge_cells_list = json_data.get('mergeCells', [])
 
         # 2. Crear el libro y la hoja de trabajo
         wb = Workbook()
@@ -96,49 +91,41 @@ def create_excel():
                     cell.value = cell_data.get('value')
                     apply_styles_to_cell(cell, cell_data.get('style'))
 
-        # 4. Aplicar formato condicional
-       # === NUEVA SECCIÓN DE FORMATO CONDICIONAL (MÁS ROBUSTA) ===
-from openpyxl.formatting.rule import Rule, DataBarRule # Asegúrate de añadir DataBarRule en los imports
+        # 4. ¡NUEVO! Aplicar combinación de celdas
+        for cell_range in merge_cells_list:
+            ws.merge_cells(cell_range)
 
-# ... (dentro de tu endpoint /create-excel)
+        # 5. Aplicar formato condicional (SECCIÓN CORREGIDA)
+        for rule_info in conditional_rules:
+            style = rule_info.get('style', {})
+            dxf = DifferentialStyle(
+                font=Font(**style.get('font', {})),
+                fill=PatternFill(**style.get('fill', {}))
+            )
+            
+            # Construye los parámetros de la regla dinámicamente
+            rule_params = {'type': rule_info['type'], 'dxf': dxf}
+            if 'operator' in rule_info:
+                rule_params['operator'] = rule_info['operator']
+            if 'formulae' in rule_info:
+                rule_params['formula'] = rule_info['formulae']
 
-for rule_info in conditional_rules:
-    style = rule_info.get('style', {})
-    dxf = DifferentialStyle(
-        font=Font(**style.get('font', {})),
-        fill=PatternFill(**style.get('fill', {}))
-    )
+            # Manejo especial para reglas que no usan 'dxf' como las barras de datos
+            if rule_info['type'] == 'dataBar':
+                rule = DataBarRule(
+                    start_type='min', end_type='max', 
+                    color=rule_info.get("color", "638EC6")
+                )
+            else:
+                rule = Rule(**rule_params)
 
-    # Construye los parámetros de la regla dinámicamente
-    rule_params = {
-        'type': rule_info['type'],
-        'dxf': dxf
-    }
-    if 'operator' in rule_info:
-        rule_params['operator'] = rule_info['operator']
+            ws.conditional_formatting.add(rule_info['ref'], rule)
 
-    # La clave en el JSON es 'formulae', pero el parámetro de openpyxl es 'formula'
-    if 'formulae' in rule_info:
-        rule_params['formula'] = rule_info['formulae']
-
-    # Manejo especial para reglas que no usan 'dxf' como las barras de datos
-    if rule_info['type'] == 'dataBar':
-        rule = DataBarRule(
-            start_type='min', end_type='max', 
-            color=rule_info.get("color", "638EC6")
-        )
-    else:
-        rule = Rule(**rule_params)
-
-    ws.conditional_formatting.add(rule_info['ref'], rule)
-
-# === FIN DE LA NUEVA SECCIÓN ===
-
-        # 5. ¡NUEVO! Crear e insertar los gráficos
+        # 6. Crear e insertar los gráficos
         for spec in chart_specs:
             create_chart_from_spec(ws, spec)
 
-        # 6. Ajustar ancho de columnas
+        # 7. Ajustar ancho de columnas
         for col in ws.columns:
             max_length = 0
             column_letter = col[0].column_letter
@@ -148,18 +135,19 @@ for rule_info in conditional_rules:
                         max_length = len(str(cell.value))
                 except:
                     pass
-            adjusted_width = (max_length + 2)
+            # Se limita el ancho máximo a 50 para evitar columnas exageradamente anchas
+            adjusted_width = (max_length + 2) if max_length < 50 else 50
             ws.column_dimensions[column_letter].width = adjusted_width
 
-        # 7. Guardar el archivo en memoria y enviarlo como respuesta
+        # 8. Guardar el archivo en memoria y enviarlo como respuesta
         buffer = io.BytesIO()
         wb.save(buffer)
-        buffer.seek(0) # Mover el cursor al inicio del buffer
+        buffer.seek(0)
 
         return send_file(
             buffer,
             as_attachment=True,
-            download_name='reporte_con_graficos.xlsx',
+            download_name='reporte_completo.xlsx',
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
 
@@ -169,6 +157,4 @@ for rule_info in conditional_rules:
 
 # --- Punto de Entrada para Ejecutar la Aplicación ---
 if __name__ == '__main__':
-    # Ejecutar en modo debug para desarrollo local
     app.run(debug=True, port=5000)
-
