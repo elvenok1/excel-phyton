@@ -1,7 +1,10 @@
 import io
 from flask import Flask, request, jsonify, send_file
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Border, Side, Alignment, DifferentialStyle
+# --- LÍNEAS DE IMPORTACIÓN CORREGIDAS ---
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+from openpyxl.styles.differential import DifferentialStyle
+# --- FIN DE LA CORRECCIÓN ---
 from openpyxl.formatting.rule import Rule, DataBarRule
 from openpyxl.chart import BarChart, LineChart, PieChart, Reference
 
@@ -91,11 +94,11 @@ def create_excel():
                     cell.value = cell_data.get('value')
                     apply_styles_to_cell(cell, cell_data.get('style'))
 
-        # 4. ¡NUEVO! Aplicar combinación de celdas
+        # 4. Aplicar combinación de celdas
         for cell_range in merge_cells_list:
             ws.merge_cells(cell_range)
 
-        # 5. Aplicar formato condicional (SECCIÓN CORREGIDA)
+        # 5. Aplicar formato condicional
         for rule_info in conditional_rules:
             style = rule_info.get('style', {})
             dxf = DifferentialStyle(
@@ -103,14 +106,12 @@ def create_excel():
                 fill=PatternFill(**style.get('fill', {}))
             )
             
-            # Construye los parámetros de la regla dinámicamente
             rule_params = {'type': rule_info['type'], 'dxf': dxf}
             if 'operator' in rule_info:
                 rule_params['operator'] = rule_info['operator']
             if 'formulae' in rule_info:
                 rule_params['formula'] = rule_info['formulae']
 
-            # Manejo especial para reglas que no usan 'dxf' como las barras de datos
             if rule_info['type'] == 'dataBar':
                 rule = DataBarRule(
                     start_type='min', end_type='max', 
@@ -135,7 +136,6 @@ def create_excel():
                         max_length = len(str(cell.value))
                 except:
                     pass
-            # Se limita el ancho máximo a 50 para evitar columnas exageradamente anchas
             adjusted_width = (max_length + 2) if max_length < 50 else 50
             ws.column_dimensions[column_letter].width = adjusted_width
 
