@@ -1,4 +1,5 @@
 import io
+import re
 from flask import Flask, request, jsonify, send_file
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
@@ -22,7 +23,6 @@ def apply_styles_to_cell(cell, style_data):
         cell.font = Font(**style_data['font'])
     
     if 'fill' in style_data:
-        # Asegura compatibilidad con 'pattern' o 'fill_type'
         if 'pattern' in style_data['fill'] and 'fill_type' not in style_data['fill']:
             style_data['fill']['fill_type'] = style_data['fill'].pop('pattern')
         cell.fill = PatternFill(**style_data['fill'])
@@ -43,7 +43,10 @@ def apply_styles_to_cell(cell, style_data):
         cell.number_format = style_data['numFmt']
 
 def create_chart_from_spec(worksheet, chart_spec):
-    """Crea y añade un gráfico a la hoja de cálculo según la especificación."""
+    """
+    Crea y añade un gráfico a la hoja de cálculo según la especificación.
+    *** CORRECCIÓN APLICADA AQUÍ ***
+    """
     chart_type = chart_spec.get('type', 'bar').lower()
 
     if chart_type in ['bar', 'col']:
@@ -54,7 +57,6 @@ def create_chart_from_spec(worksheet, chart_spec):
     elif chart_type == 'pie':
         chart = PieChart()
     else:
-        # Si el tipo de gráfico no es soportado, no hacer nada.
         return
 
     chart.title = chart_spec.get('title', 'Gráfico sin Título')
@@ -65,22 +67,35 @@ def create_chart_from_spec(worksheet, chart_spec):
     if 'x_axis_title' in chart_spec:
         chart.x_axis.title = chart_spec['x_axis_title']
 
-    data = Reference(worksheet, range_string=chart_spec['data_range'])
-    cats = Reference(worksheet, range_string=chart_spec['category_range'])
+    # --- INICIO DE LA CORRECCIÓN ---
+    # Se extrae solo el rango de celdas (ej. $C$2:$C$7) de la cadena completa 
+    # (ej. 'Reporte Generado'!$C$2:$C$7) para evitar el error de vínculo externo.
+    # Esto hace el código robusto, funcione o no con el nombre de la hoja en el JSON.
+    
+    data_range_str = chart_spec['data_range']
+    if '!' in data_range_str:
+        data_range_str = data_range_str.split('!')[-1]
+
+    category_range_str = chart_spec['category_range']
+    if '!' in category_range_str:
+        category_range_str = category_range_str.split('!')[-1]
+    # --- FIN DE LA CORRECCIÓN ---
+
+    data = Reference(worksheet, range_string=data_range_str)
+    cats = Reference(worksheet, range_string=category_range_str)
     
     chart.add_data(data, titles_from_data=chart_spec.get('titles_from_data', True))
     chart.set_categories(cats)
     
     worksheet.add_chart(chart, chart_spec.get('position', 'E1'))
 
-# --- Endpoint Principal ---
+
+# --- Endpoint Principal (sin cambios) ---
 
 @app.route('/create-excel', methods=['POST'])
 def create_excel():
     """
     Endpoint para crear un archivo Excel a partir de datos JSON.
-    El JSON puede contener datos de celdas, reglas de formato condicional,
-    especificaciones de gráficos y celdas para combinar.
     """
     try:
         json_data = request.get_json()
@@ -94,9 +109,9 @@ def create_excel():
 
         wb = Workbook()
         ws = wb.active
-        ws.title = "Reporte Generado"
+        ws.title = "Reporte Generado" # El nombre de la hoja se establece aquí
 
-        # 1. Escribir datos y aplicar estilos directos
+        # 1. Escribir datos y aplicar estilos
         for row_details in analysis_data:
             for cell_data in row_details:
                 if isinstance(cell_data, dict) and 'address' in cell_data:
@@ -125,7 +140,6 @@ def create_excel():
                 if 'operator' in rule_info:
                     rule_params['operator'] = rule_info['operator']
                 
-                # Las reglas de texto usan el parámetro 'text', mientras que otras usan 'formula'
                 if rule_type == 'containsText' and 'formulae' in rule_info:
                     rule_params['text'] = rule_info['formulae'][0]
                 elif 'formulae' in rule_info:
@@ -139,48 +153,40 @@ def create_excel():
         for spec in chart_specs:
             create_chart_from_spec(ws, spec)
 
-        # 5. Ajustar ancho de columnas automáticamente
+        # 5. Ajustar ancho de columnas
         column_widths = {}
         for row in ws.iter_rows():
             for cell in row:
                 if isinstance(cell, MergedCell):
                     continue
                 
-                # Longitud del valor de la celda
-                if cell.value:
-                    length = len(str(cell.value))
-                else:
-                    length = 0
+                length = len(str(cell.value)) if cell.value else 0
 
-                # Almacenar el ancho máximo encontrado por columna
                 if cell.column not in column_widths or length > column_widths[cell.column]:
                     column_widths[cell.column] = length
         
         for col_idx, max_length in column_widths.items():
             column_letter = get_column_letter(col_idx)
-            # Se añade un extra y se limita para evitar anchos exagerados
             adjusted_width = min(max_length + 2, 50) 
             ws.column_dimensions[column_letter].width = adjusted_width
 
-        # 6. Guardar el libro en un buffer de memoria
+        # 6. Guardar en buffer de memoria
         buffer = io.BytesIO()
         wb.save(buffer)
         buffer.seek(0)
 
-        # 7. Enviar el archivo como respuesta
+        # 7. Enviar el archivo
         return send_file(
             buffer,
             as_attachment=True,
-            download_name='reporte_generado.xlsx',
+            download_name='reporte_corregido.xlsx',
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
         
     except Exception as e:
-        # Capturar cualquier excepción para depuración
         print(f"Error en /create-excel: {e}")
         return jsonify({"error": f"Error interno del servidor: {str(e)}"}), 500
 
 # --- Bloque de Ejecución ---
 if __name__ == '__main__':
-    # Inicia el servidor de desarrollo de Flask
     app.run(debug=True, port=5000)
