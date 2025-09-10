@@ -15,7 +15,7 @@ from openpyxl.cell import MergedCell
 # --- Inicialización de la Aplicación Flask ---
 app = Flask(__name__)
 
-# --- FUNCIONES DE AYUDA PARA CREAR EXCEL ---
+# --- FUNCIONES DE AYUDA PARA CREAR EXCEL (SIN CAMBIOS) ---
 def apply_styles_to_cell(cell, style_data):
     if not style_data or not isinstance(style_data, dict): return
     if 'font' in style_data: cell.font = Font(**style_data['font'])
@@ -43,9 +43,10 @@ def create_chart_from_spec(worksheet, chart_spec):
     chart.set_categories(cats)
     worksheet.add_chart(chart, chart_spec.get('position', 'E1'))
 
-# --- ENDPOINT PARA CREAR EXCEL DESDE JSON ---
+# --- ENDPOINT PARA CREAR EXCEL DESDE JSON (SIN CAMBIOS) ---
 @app.route('/create-excel', methods=['POST'])
 def create_excel():
+    # ... (Este endpoint ya estaba corregido y no necesita cambios)
     try:
         json_data = request.get_json()
         if not json_data or 'analysisData' not in json_data:
@@ -70,12 +71,10 @@ def create_excel():
         for cell_range in merge_cells_list:
             ws.merge_cells(cell_range)
 
-        # === SECCIÓN DE FORMATO CONDICIONAL CORREGIDA Y ROBUSTA ===
         for i, rule_info in enumerate(conditional_rules):
             try:
                 style = rule_info.get('style', {})
                 dxf = DifferentialStyle(font=Font(**style.get('font', {})), fill=PatternFill(**style.get('fill', {})))
-                
                 rule_params = {'type': rule_info['type'], 'dxf': dxf}
                 if 'operator' in rule_info:
                     rule_params['operator'] = rule_info['operator']
@@ -84,8 +83,6 @@ def create_excel():
                     if 'formulae' in rule_info and rule_info['formulae']:
                         rule_params['text'] = rule_info['formulae'][0]
                 elif 'formulae' in rule_info:
-                    # CORRECCIÓN CLAVE: Validar y convertir los valores de las fórmulas a números (float).
-                    # Esto soluciona el error "expected <class 'float'>" si el JSON envía números como texto.
                     cleaned_formulae = []
                     for f_val in rule_info['formulae']:
                         if f_val is not None and str(f_val).strip() != '':
@@ -96,23 +93,18 @@ def create_excel():
                 if rule_info['type'] == 'dataBar':
                     rule = DataBarRule(start_type='min', end_type='max', color=rule_info.get("color", "638EC6"))
                 else:
-                    # Solo crear la regla si tiene los parámetros necesarios (ej: 'formula' o 'text')
                     if 'formula' in rule_params or 'text' in rule_params:
                         rule = Rule(**rule_params)
                         ws.conditional_formatting.add(rule_info['ref'], rule)
             except (ValueError, TypeError) as e:
-                # Si una regla falla (ej: un valor no se puede convertir a float),
-                # se imprime un aviso y el proceso continúa con las demás reglas.
                 print(f"ADVERTENCIA: Se omitió la regla de formato condicional #{i} por datos inválidos.")
                 print(f"   --- Regla problemática: {rule_info}")
                 print(f"   --- Error específico: {e}")
                 pass
-        # === FIN DE LA SECCIÓN CORREGIDA ===
 
         for spec in chart_specs:
             create_chart_from_spec(ws, spec)
 
-        # Lógica de ajuste de columnas robusta
         column_widths = {}
         for row in ws.iter_rows():
             for cell in row:
@@ -136,38 +128,72 @@ def create_excel():
         print(f"Error en /create-excel: {e}")
         return jsonify({"error": f"Error interno del servidor: {str(e)}"}), 500
 
-# --- NUEVAS FUNCIONES PARA ANALIZAR EXCEL ---
+
+# === FUNCIÓN DE ANÁLISIS CORREGIDA ===
 def extract_styles_from_cell(cell):
+    """
+    Extrae los estilos de una celda y los devuelve en un diccionario.
+    Esta versión es más robusta y no usa el atributo '.is_default' que causaba el error.
+    """
     style_data = {}
-    if cell.has_style:
-        if cell.font and not cell.font.is_default:
-            style_data['font'] = {k: v for k, v in cell.font.__dict__.items() if v is not None}
-            if 'color' in style_data['font'] and style_data['font']['color'] is not None:
-                style_data['font']['color'] = style_data['font']['color'].rgb
-        if cell.fill and not cell.fill.is_default:
-            style_data['fill'] = {
-                'pattern': cell.fill.fill_type,
-                'start_color': cell.fill.start_color.rgb if cell.fill.start_color else None,
-                'end_color': cell.fill.end_color.rgb if cell.fill.end_color else None
-            }
-        if cell.border and not cell.border.is_default:
-             style_data['border'] = {
-                 'left': {'style': cell.border.left.style, 'color': cell.border.left.color.rgb if cell.border.left.color else None} if cell.border.left else {},
-                 'right': {'style': cell.border.right.style, 'color': cell.border.right.color.rgb if cell.border.right.color else None} if cell.border.right else {},
-                 'top': {'style': cell.border.top.style, 'color': cell.border.top.color.rgb if cell.border.top.color else None} if cell.border.top else {},
-                 'bottom': {'style': cell.border.bottom.style, 'color': cell.border.bottom.color.rgb if cell.border.bottom.color else None} if cell.border.bottom else {},
-             }
-        if cell.alignment and not cell.alignment.is_default:
-            style_data['alignment'] = {
-                'horizontal': cell.alignment.horizontal,
-                'vertical': cell.alignment.vertical,
-                'wrap_text': cell.alignment.wrap_text
-            }
-        if cell.number_format and cell.number_format != 'General':
-            style_data['numFmt'] = cell.number_format
+    if not cell.has_style:
+        return style_data
+
+    # Fuente (Font)
+    font_data = {}
+    if cell.font:
+        if cell.font.name: font_data['name'] = cell.font.name
+        if cell.font.sz: font_data['sz'] = cell.font.sz
+        if cell.font.bold: font_data['bold'] = cell.font.bold
+        if cell.font.italic: font_data['italic'] = cell.font.italic
+        if cell.font.color and cell.font.color.rgb:
+            font_data['color'] = cell.font.color.rgb
+    if font_data:
+        style_data['font'] = font_data
+
+    # Relleno (Fill)
+    fill_data = {}
+    if cell.fill and cell.fill.fill_type:
+        fill_data['pattern'] = cell.fill.fill_type
+        if cell.fill.start_color and cell.fill.start_color.rgb:
+            fill_data['start_color'] = cell.fill.start_color.rgb
+        if cell.fill.end_color and cell.fill.end_color.rgb:
+            fill_data['end_color'] = cell.fill.end_color.rgb
+    if fill_data:
+        style_data['fill'] = fill_data
+        
+    # Bordes (Border)
+    border_data = {}
+    if cell.border:
+        def get_side_style(side):
+            if side and side.style:
+                return {'style': side.style, 'color': side.color.rgb if side.color else None}
+            return None
+        
+        left, right, top, bottom = get_side_style(cell.border.left), get_side_style(cell.border.right), get_side_style(cell.border.top), get_side_style(cell.border.bottom)
+        if left: border_data['left'] = left
+        if right: border_data['right'] = right
+        if top: border_data['top'] = top
+        if bottom: border_data['bottom'] = bottom
+    if border_data:
+        style_data['border'] = border_data
+        
+    # Alineación (Alignment)
+    alignment_data = {}
+    if cell.alignment:
+        if cell.alignment.horizontal: alignment_data['horizontal'] = cell.alignment.horizontal
+        if cell.alignment.vertical: alignment_data['vertical'] = cell.alignment.vertical
+        if cell.alignment.wrap_text: alignment_data['wrap_text'] = cell.alignment.wrap_text
+    if alignment_data:
+        style_data['alignment'] = alignment_data
+        
+    # Formato de número
+    if cell.number_format and cell.number_format != 'General':
+        style_data['numFmt'] = cell.number_format
+            
     return style_data
 
-# --- NUEVO ENDPOINT PARA ANALIZAR EXCEL Y DEVOLVER JSON ---
+# --- ENDPOINT PARA ANALIZAR EXCEL (CON LA FUNCIÓN CORREGIDA) ---
 @app.route('/parse-excel', methods=['POST'])
 def parse_excel():
     if 'excel_file' not in request.files:
@@ -177,7 +203,6 @@ def parse_excel():
         return jsonify({"error": "No se seleccionó ningún archivo."}), 400
     try:
         in_memory_file = io.BytesIO(file.read())
-        # data_only=True lee el resultado de las fórmulas, no la fórmula en sí
         wb = load_workbook(filename=in_memory_file, data_only=True)
         parsed_data = {'sheets': []}
         for sheet_name in wb.sheetnames:
@@ -198,6 +223,7 @@ def parse_excel():
                     if isinstance(cell, MergedCell):
                         cell_info['is_merged_part'] = True
                     else:
+                        # Usando la función corregida
                         cell_info['style'] = extract_styles_from_cell(cell)
                     row_list.append(cell_info)
                 rows_data.append(row_list)
@@ -210,5 +236,4 @@ def parse_excel():
 
 # --- Punto de Entrada de la Aplicación ---
 if __name__ == '__main__':
-    # Usar host='0.0.0.0' para que sea accesible desde fuera del contenedor (si aplica)
     app.run(host='0.0.0.0', port=5000, debug=True)
