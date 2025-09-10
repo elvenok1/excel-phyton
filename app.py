@@ -11,41 +11,81 @@ from openpyxl.cell import MergedCell
 # --- Inicialización de la Aplicación Flask ---
 app = Flask(__name__)
 
-# --- Funciones de Ayuda (sin cambios) ---
+# --- Funciones de Ayuda ---
+
 def apply_styles_to_cell(cell, style_data):
-    if not style_data or not isinstance(style_data, dict): return
-    if 'font' in style_data: cell.font = Font(**style_data['font'])
+    """Aplica estilos a una celda a partir de un diccionario de configuración."""
+    if not isinstance(style_data, dict):
+        return
+
+    if 'font' in style_data:
+        cell.font = Font(**style_data['font'])
+    
     if 'fill' in style_data:
-        if 'pattern' in style_data['fill']: style_data['fill']['fill_type'] = style_data['fill'].pop('pattern')
+        # Asegura compatibilidad con 'pattern' o 'fill_type'
+        if 'pattern' in style_data['fill'] and 'fill_type' not in style_data['fill']:
+            style_data['fill']['fill_type'] = style_data['fill'].pop('pattern')
         cell.fill = PatternFill(**style_data['fill'])
+        
     if 'border' in style_data:
-        cell.border = Border(left=Side(**style_data['border'].get('left', {})), right=Side(**style_data['border'].get('right', {})), top=Side(**style_data['border'].get('top', {})), bottom=Side(**style_data['border'].get('bottom', {})))
-    if 'alignment' in style_data: cell.alignment = Alignment(**style_data['alignment'])
-    if 'numFmt' in style_data: cell.number_format = style_data['numFmt']
+        border_styles = style_data['border']
+        cell.border = Border(
+            left=Side(**border_styles.get('left', {})),
+            right=Side(**border_styles.get('right', {})),
+            top=Side(**border_styles.get('top', {})),
+            bottom=Side(**border_styles.get('bottom', {}))
+        )
+        
+    if 'alignment' in style_data:
+        cell.alignment = Alignment(**style_data['alignment'])
+        
+    if 'numFmt' in style_data:
+        cell.number_format = style_data['numFmt']
 
 def create_chart_from_spec(worksheet, chart_spec):
+    """Crea y añade un gráfico a la hoja de cálculo según la especificación."""
     chart_type = chart_spec.get('type', 'bar').lower()
-    if chart_type in ['bar', 'col']: chart = BarChart(); chart.type = chart_type
-    elif chart_type == 'line': chart = LineChart()
-    elif chart_type == 'pie': chart = PieChart()
-    else: return
+
+    if chart_type in ['bar', 'col']:
+        chart = BarChart()
+        chart.type = chart_type
+    elif chart_type == 'line':
+        chart = LineChart()
+    elif chart_type == 'pie':
+        chart = PieChart()
+    else:
+        # Si el tipo de gráfico no es soportado, no hacer nada.
+        return
+
     chart.title = chart_spec.get('title', 'Gráfico sin Título')
     chart.style = chart_spec.get('style', 10)
-    if 'y_axis_title' in chart_spec: chart.y_axis.title = chart_spec['y_axis_title']
-    if 'x_axis_title' in chart_spec: chart.x_axis.title = chart_spec['x_axis_title']
+    
+    if 'y_axis_title' in chart_spec:
+        chart.y_axis.title = chart_spec['y_axis_title']
+    if 'x_axis_title' in chart_spec:
+        chart.x_axis.title = chart_spec['x_axis_title']
+
     data = Reference(worksheet, range_string=chart_spec['data_range'])
     cats = Reference(worksheet, range_string=chart_spec['category_range'])
+    
     chart.add_data(data, titles_from_data=chart_spec.get('titles_from_data', True))
     chart.set_categories(cats)
+    
     worksheet.add_chart(chart, chart_spec.get('position', 'E1'))
 
 # --- Endpoint Principal ---
+
 @app.route('/create-excel', methods=['POST'])
 def create_excel():
+    """
+    Endpoint para crear un archivo Excel a partir de datos JSON.
+    El JSON puede contener datos de celdas, reglas de formato condicional,
+    especificaciones de gráficos y celdas para combinar.
+    """
     try:
         json_data = request.get_json()
-        if not json_data or 'analysisData' not in json_data:
-            return jsonify({"error": "El JSON no es válido o no contiene 'analysisData'."}), 400
+        if not json_data:
+            return jsonify({"error": "El cuerpo de la solicitud no contiene un JSON válido."}), 400
 
         analysis_data = json_data.get('analysisData', [])
         conditional_rules = json_data.get('conditionalFormattingRules', [])
@@ -56,67 +96,91 @@ def create_excel():
         ws = wb.active
         ws.title = "Reporte Generado"
 
+        # 1. Escribir datos y aplicar estilos directos
         for row_details in analysis_data:
             for cell_data in row_details:
-                if cell_data and 'address' in cell_data:
+                if isinstance(cell_data, dict) and 'address' in cell_data:
                     cell = ws[cell_data['address']]
                     cell.value = cell_data.get('value')
                     apply_styles_to_cell(cell, cell_data.get('style'))
 
+        # 2. Combinar celdas
         for cell_range in merge_cells_list:
             ws.merge_cells(cell_range)
 
-        # === SECCIÓN DE FORMATO CONDICIONAL - CORRECCIÓN FINAL ===
+        # 3. Aplicar formato condicional
         for rule_info in conditional_rules:
             style = rule_info.get('style', {})
-            dxf = DifferentialStyle(font=Font(**style.get('font', {})), fill=PatternFill(**style.get('fill', {})))
+            dxf = DifferentialStyle(
+                font=Font(**style.get('font', {})),
+                fill=PatternFill(**style.get('fill', {}))
+            )
             
-            rule_params = {'type': rule_info['type'], 'dxf': dxf}
-            if 'operator' in rule_info:
-                rule_params['operator'] = rule_info['operator']
+            rule_type = rule_info.get('type')
             
-            # --- CORRECCIÓN CLAVE: Usar el parámetro 'text' o 'formula' según el tipo de regla ---
-            if rule_info['type'] == 'containsText':
-                if 'formulae' in rule_info and rule_info['formulae']:
-                    rule_params['text'] = rule_info['formulae'][0] # Las reglas de texto usan el parámetro 'text'
-            elif 'formulae' in rule_info:
-                rule_params['formula'] = rule_info['formulae'] # Las reglas numéricas usan 'formula'
-
-            if rule_info['type'] == 'dataBar':
+            if rule_type == 'dataBar':
                 rule = DataBarRule(start_type='min', end_type='max', color=rule_info.get("color", "638EC6"))
             else:
+                rule_params = {'type': rule_type, 'dxf': dxf}
+                if 'operator' in rule_info:
+                    rule_params['operator'] = rule_info['operator']
+                
+                # Las reglas de texto usan el parámetro 'text', mientras que otras usan 'formula'
+                if rule_type == 'containsText' and 'formulae' in rule_info:
+                    rule_params['text'] = rule_info['formulae'][0]
+                elif 'formulae' in rule_info:
+                    rule_params['formula'] = rule_info['formulae']
+                
                 rule = Rule(**rule_params)
 
             ws.conditional_formatting.add(rule_info['ref'], rule)
-        # === FIN DE LA SECCIÓN CORREGIDA ===
 
+        # 4. Crear gráficos
         for spec in chart_specs:
             create_chart_from_spec(ws, spec)
 
-        # Lógica de ajuste de columnas robusta
+        # 5. Ajustar ancho de columnas automáticamente
         column_widths = {}
         for row in ws.iter_rows():
             for cell in row:
-                if isinstance(cell, MergedCell): continue
-                try: length = len(str(cell.value))
-                except: length = 0
+                if isinstance(cell, MergedCell):
+                    continue
+                
+                # Longitud del valor de la celda
+                if cell.value:
+                    length = len(str(cell.value))
+                else:
+                    length = 0
+
+                # Almacenar el ancho máximo encontrado por columna
                 if cell.column not in column_widths or length > column_widths[cell.column]:
                     column_widths[cell.column] = length
         
         for col_idx, max_length in column_widths.items():
             column_letter = get_column_letter(col_idx)
-            adjusted_width = (max_length + 2) if max_length < 50 else 50
+            # Se añade un extra y se limita para evitar anchos exagerados
+            adjusted_width = min(max_length + 2, 50) 
             ws.column_dimensions[column_letter].width = adjusted_width
 
+        # 6. Guardar el libro en un buffer de memoria
         buffer = io.BytesIO()
         wb.save(buffer)
         buffer.seek(0)
 
-        return send_file(buffer, as_attachment=True, download_name='reporte_final_correcto.xlsx', mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        # 7. Enviar el archivo como respuesta
+        return send_file(
+            buffer,
+            as_attachment=True,
+            download_name='reporte_generado.xlsx',
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        
     except Exception as e:
+        # Capturar cualquier excepción para depuración
         print(f"Error en /create-excel: {e}")
         return jsonify({"error": f"Error interno del servidor: {str(e)}"}), 500
 
+# --- Bloque de Ejecución ---
 if __name__ == '__main__':
+    # Inicia el servidor de desarrollo de Flask
     app.run(debug=True, port=5000)
-
